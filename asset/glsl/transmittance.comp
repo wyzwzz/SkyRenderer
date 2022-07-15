@@ -1,0 +1,76 @@
+#version 460 core
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+#define STEP_COUNT 1000
+
+//no rgb32f
+layout(rgba32f,binding = 0) uniform image2D Transmittance;
+
+layout(std140,binding = 0) uniform AtmosphereProperties{
+    vec3 rayleigh_scattering;
+    float rayleigh_density_h;
+
+    float mie_scattering;
+    float mie_asymmetry_g;
+    float mie_absorption;
+    float mie_density_h;
+
+    vec3 ozone_absorption;
+    float ozone_center_h;
+    float ozone_width;
+
+    float ground_radius;
+    float top_atmosphere_radius;
+};
+
+vec3 getSigmaT(float h){
+    vec3 rayleigh = rayleigh_scattering * exp(-h / rayleigh_density_h);
+    vec3 mie = vec3(mie_scattering + mie_absorption) * exp(-h / mie_density_h);
+    vec3 ozone = ozone_absorption * max(0.0,1 - abs(h - ozone_center_h) / (ozone_width * 0.5));
+    return rayleigh + mie + ozone;
+}
+
+bool findClosestIntersectionWithCircle(vec2 o, vec2 d, float R, out float t){
+    float A = dot(d, d);
+    float B = 2 * dot(o, d);
+    float C = dot(o, o) - R * R;
+    float delta = B * B - 4 * A * C;
+    if(delta < 0)
+    return false;
+    t = (-B + (C <= 0 ? sqrt(delta) : -sqrt(delta))) / (2 * A);
+    return (C <= 0) || (B <= 0);
+}
+
+void main(){
+    ivec2 res = imageSize(Transmittance);
+    ivec2 g_index = ivec2(gl_WorkGroupSize.xy * gl_WorkGroupID.xy + gl_LocalInvocationID.xy);
+    if(g_index.x >= res.x || g_index.y >= res.y){
+        return;
+    }
+
+    //get altitude and sun / zenith angle
+    float theta = asin(mix(-1.0,1.0,(g_index.y + 0.5) / res.y));
+    float h = mix(0.0, top_atmosphere_radius - ground_radius, (g_index.x + 0.5) / res.x);
+
+    //isotropic for phi so just use 2d-coord instead of 3d-coord and use circle instead of sphere
+    vec2 c = vec2(0.0,ground_radius + h);
+    vec2 v = vec2(cos(theta),sin(theta));
+
+    float t = 0;
+    if(!findClosestIntersectionWithCircle(c,v,ground_radius,t)){
+        findClosestIntersectionWithCircle(c,v,top_atmosphere_radius,t);
+    }
+    vec2 p = c + v * t;
+
+    vec3 sum = vec3(0);
+    float dt = t / STEP_COUNT;
+    for(int i = 0; i < STEP_COUNT; i++){
+        vec2 pi = mix(c,p,(i + 0.5) / STEP_COUNT);
+        float hi = length(pi) - ground_radius;
+        vec3 sigma_t = getSigmaT(hi);
+        sum += sigma_t * dt;
+    }
+    vec4 tranimittance = vec4(exp(-sum),1.f);
+    imageStore(Transmittance,g_index,tranimittance);
+}
