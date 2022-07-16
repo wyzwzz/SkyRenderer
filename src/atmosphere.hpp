@@ -5,7 +5,7 @@ struct AtmosphereProperties{
     float rayleigh_density_h = 8.f;//km
 
     float mie_scattering = 3.996f;
-    float mie_asymmetry_g = 0.8f;//scalar
+    float mie_asymmetry_g = 0.88f;//scalar
     float mie_absorption = 4.4f;
     float mie_density_h = 1.2f;
 

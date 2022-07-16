@@ -1,5 +1,7 @@
 #include "atmosphere.hpp"
 
+#define set_uniform_var set_uniform_var_unchecked
+
 inline vec3i getGroupSize(int x,int y = 1,int z = 1){
     constexpr int group_thread_size_x = 16;
     constexpr int group_thread_size_y = 16;
@@ -373,6 +375,9 @@ public:
         shader.unbind();
 
     }
+    const texture3d_t& getLUT() const{
+        return lut;
+    }
 private:
     struct AerialParams{
         vec3f sun_dir;
@@ -403,9 +408,101 @@ private:
 
 class MeshRenderer{
 public:
+    void initialize(const vec2i& res){
+        shader = program_t::build_from(
+                shader_t<GL_VERTEX_SHADER>::from_file("asset/glsl/mesh.vert"),
+                shader_t<GL_FRAGMENT_SHADER>::from_file("asset/glsl/mesh.frag"));
 
+        atmosphere_buffer.initialize_handle();
+        atmosphere_buffer.reinitialize_buffer_data(nullptr,GL_STATIC_DRAW);
+
+        params_buffer.initialize_handle();
+        params_buffer.reinitialize_buffer_data(nullptr,GL_DYNAMIC_DRAW);
+
+        linear_sampler.initialize_handle();
+        linear_sampler.set_param(GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        linear_sampler.set_param(GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        linear_sampler.set_param(GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        linear_sampler.set_param(GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        linear_sampler.set_param(GL_TEXTURE_WRAP_R,GL_CLAMP_TO_EDGE);
+        nearest_sampler.initialize_handle();
+        nearest_sampler.set_param(GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        nearest_sampler.set_param(GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_R,GL_CLAMP_TO_EDGE);
+
+        resize(res);
+    };
+    void resize(const vec2i& res){
+        this->res = res;
+    }
+    void setAtmosphere(const AtmosphereProperties& atmos){
+        atmosphere_buffer.set_buffer_data(&atmos);
+    }
+    void setSun(const vec3f& sun_dir,const vec3f& sun_radiance,const mat4& sun_proj_view){
+        params.sun_dir = sun_dir;
+        params.sun_theta = std::asin(-sun_dir.y);
+        params.shadow_vp = sun_proj_view;
+        params.sun_intensity = sun_radiance;
+    }
+    void setAerialPerspective(float max_aerial_dist,float world_scale){
+        params.max_aerial_distance = max_aerial_dist;
+        params.world_scale = world_scale;
+    }
+    void begin(const texture2d_t& transmittance,
+               const texture3d_t& aerial_lut,
+               const texture2d_t& shadow_map,
+               const mat4& camera_proj_view){
+        transmittance.bind(0);
+        aerial_lut.bind(1);
+        shadow_map.bind(2);
+        linear_sampler.bind(0);
+        linear_sampler.bind(1);
+        nearest_sampler.bind(2);
+
+        GL_EXPR(glViewport(0,0,res.x,res.y));
+        shader.bind();
+        shader.set_uniform_var("ProjView",camera_proj_view);
+    }
+
+    void render(const mat4& model,
+                const vertex_array_t& vao,
+                int draw_count,
+                const vec3f& view_pos){
+        shader.set_uniform_var("Model",model);
+
+        atmosphere_buffer.bind(0);
+
+        params.view_pos = view_pos;
+        params_buffer.set_buffer_data(&params);
+        params_buffer.bind(1);
+
+        vao.bind();
+
+        GL_EXPR(glDrawElements(GL_TRIANGLES,draw_count,GL_UNSIGNED_INT,nullptr));
+        vao.unbind();
+    }
+
+    void end(){
+        shader.unbind();
+    }
 private:
-
+    program_t shader;
+    struct MeshParams{
+        vec3f sun_dir;
+        float sun_theta;
+        vec3f sun_intensity;
+        float max_aerial_distance;
+        vec3f view_pos;
+        float world_scale;
+        mat4 shadow_vp;
+    }params;
+    std140_uniform_block_buffer_t<MeshParams> params_buffer;
+    std140_uniform_block_buffer_t<AtmosphereProperties> atmosphere_buffer;
+    vec2i res;
+    sampler_t linear_sampler;
+    sampler_t nearest_sampler;
 };
 
 class SkyViewRenderer{
@@ -450,7 +547,6 @@ public:
         params_buffer.set_buffer_data(&params);
         params_buffer.bind(0);
 
-        framebuffer_t::clear_color_depth_buffer();
         GL_EXPR(glViewport(0,0,view_res.x,view_res.y));
         shader.bind();
         sky_lut.bind(0);
@@ -483,9 +579,75 @@ private:
 
 class SunDiskRenderer{
 public:
+    void initialize(const vec2i& res){
 
+        shader = program_t::build_from(
+                shader_t<GL_VERTEX_SHADER>::from_file("asset/glsl/sun.vert"),
+                shader_t<GL_FRAGMENT_SHADER>::from_file("asset/glsl/sun.frag"));
+
+        linear_sampler.initialize_handle();
+        linear_sampler.set_param(GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        linear_sampler.set_param(GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        linear_sampler.set_param(GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        linear_sampler.set_param(GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        linear_sampler.set_param(GL_TEXTURE_WRAP_R,GL_CLAMP_TO_EDGE);
+
+        auto sphere = MakeSphere();
+        sun.vao.initialize_handle();
+        sun.pos.initialize_handle();
+        sun.ebo.initialize_handle();
+        sun.pos.reinitialize_buffer_data(sphere.positions.data(),sphere.positions.size(),GL_STATIC_DRAW);
+        sun.vao.bind_vertex_buffer_to_attrib(attrib_var_t<vec3f>(0),sun.pos,0);
+        sun.vao.enable_attrib(attrib_var_t<vec3f>(0));
+        sun.ebo.reinitialize_buffer_data(sphere.indices.data(),sphere.indices.size(),GL_STATIC_DRAW);
+        sun.vao.bind_index_buffer(sun.ebo);
+
+        atmosphere_buffer.initialize_handle();
+        atmosphere_buffer.reinitialize_buffer_data(nullptr,GL_STATIC_DRAW);
+
+        resize(res);
+    }
+    void resize(const vec2i& res){
+        this->res = res;
+    }
+    void setAtmosphere(const AtmosphereProperties& atmos){
+        atmosphere_buffer.set_buffer_data(&atmos);
+    }
+    void setSun(const vec3f& sun_dir,const vec3f& sun_radiance){
+        shader.bind();
+        shader.set_uniform_var("sun_theta",std::asin(-sun_dir.y));
+        shader.set_uniform_var("SunRadiance",sun_radiance);
+        shader.unbind();
+    }
+    void render(const texture2d_t& transmittance,
+                const texture2d_t& multi_scattering,
+                const mat4& mvp,
+                float view_height){
+        shader.bind();
+        sun.vao.bind();
+        shader.set_uniform_var("MVP",mvp);
+        shader.set_uniform_var("view_height",view_height);
+        transmittance.bind(0);
+        multi_scattering.bind(1);
+        linear_sampler.bind(0);
+        linear_sampler.bind(1);
+        atmosphere_buffer.bind(0);
+        GL_EXPR(glDepthFunc(GL_LEQUAL));
+        GL_EXPR(glDrawElements(GL_TRIANGLE_STRIP,sun.ebo.index_count(),GL_UNSIGNED_INT,nullptr));
+        GL_EXPR(glDepthFunc(GL_LESS));
+        sun.vao.unbind();
+        shader.unbind();
+    }
 private:
-
+    program_t shader;
+    std140_uniform_block_buffer_t<AtmosphereProperties> atmosphere_buffer;
+    sampler_t linear_sampler;
+    vec2i res;
+    struct{
+        vertex_array_t vao;
+        vertex_buffer_t<vec3f> pos;
+        index_buffer_t<uint32_t> ebo;
+    }sun;
 };
 
 
@@ -527,11 +689,21 @@ private:
 
         aerial_lut_generator.initialize(aerial_lut_size);
         aerial_lut_generator.setAtmosphere(std_unit_atmosphere_properties);
+        aerial_lut_generator.setAerialPerspective(world_scale,max_aerial_distance,
+                                                  ray_marching_steps_per_slice,
+                                                  enable_shadow,enable_multi_scattering);
 
         sky_view_renderer.initialize(window->get_window_size());
 
+        mesh_renderer.initialize(window->get_window_size());
+        mesh_renderer.setAtmosphere(std_unit_atmosphere_properties);
+        mesh_renderer.setAerialPerspective(max_aerial_distance,world_scale);
+
+        sun_disk_renderer.initialize(window->get_window_size());
+        sun_disk_renderer.setAtmosphere(std_unit_atmosphere_properties);
+
         //camera
-        camera.set_position({4.087f,3.7f,3.957f});
+        camera.set_position({4.087f,13.7f,3.957f});
         camera.set_perspective(CameraFovDegree,0.1f,100.f);
         camera.set_direction(-PI,0);
     }
@@ -549,9 +721,9 @@ private:
                 window->set_vsync(vsync);
             }
 
-
-            ImGui::Checkbox("Enable Multi-Scattering",&enable_multi_scattering);
-            ImGui::Checkbox("Enable Shadow",&enable_shadow);
+            bool update_setting = false;
+            update_setting |= ImGui::Checkbox("Enable Multi-Scattering",&enable_multi_scattering);
+            update_setting |= ImGui::Checkbox("Enable Shadow",&enable_shadow);
             ImGui::Checkbox("Enable Sky",&enable_sky);
             ImGui::Checkbox("Enable Show Mesh",&enable_draw_mesh);
             ImGui::Checkbox("Enable Sun Disk",&enable_sun_disk);
@@ -562,6 +734,8 @@ private:
             }
 
             bool update_world_scale = ImGui::InputFloat("World Scale",&world_scale,1.f);
+
+            ImGui::Text("View Height %.0f in World Scale",camera.get_position().y * world_scale);
 
             if(ImGui::TreeNode("Atmosphere")){
                 bool update = false;
@@ -584,6 +758,7 @@ private:
 
                 if(update){
                     std_unit_atmosphere_properties = preset_atmosphere_properties.toStdUnit();
+
                     transmittance_generator.generate(std_unit_atmosphere_properties,transmittance_lut_size);
 
                     multiScattering_generator.generate(std_unit_atmosphere_properties,multi_scattering_lut_size,
@@ -594,6 +769,9 @@ private:
 
                     aerial_lut_generator.setAtmosphere(std_unit_atmosphere_properties);
 
+                    mesh_renderer.setAtmosphere(std_unit_atmosphere_properties);
+
+                    sun_disk_renderer.setAtmosphere(std_unit_atmosphere_properties);
                 }
                 ImGui::TreePop();
             }
@@ -618,14 +796,21 @@ private:
 
                 ImGui::TreePop();
             }
-            if(update_world_scale || update_aerial)
+            if(update_world_scale || update_aerial || update_setting)
                 aerial_lut_generator.setAerialPerspective(world_scale,max_aerial_distance,ray_marching_steps_per_slice,
                                                       enable_shadow,enable_multi_scattering);
+            if(update_aerial)
+                mesh_renderer.setAerialPerspective(max_aerial_distance,world_scale);
 
+            ImGui::SetNextItemOpen(true,ImGuiCond_Once);
             if(ImGui::TreeNode("Sun")){
                 ImGui::SliderFloat("Sun X Degree",&sun_x_degree,0,360);
-                ImGui::SliderFloat("Sun Y Degree",&sun_y_degree,0,90);
-                ImGui::InputFloat3("Sun Radiance",&sun_radiance.x);
+                ImGui::SliderFloat("Sun Y Degree",&sun_y_degree,-5.f,90);
+//                ImGui::InputFloat("Sun Y Degree",&sun_y_degree,0.01f);
+//                sun_y_degree = std::clamp(sun_y_degree,-0.5f,90.f);
+                ImGui::InputFloat("Sun Intensity",&sun_intensity);
+                ImGui::ColorEdit3("Sun Color",&sun_color.x);
+                ImGui::InputFloat("Sun Radius",&sun_radius);
                 ImGui::TreePop();
             }
 
@@ -650,7 +835,7 @@ private:
         shadow_generator.end();
 
 
-        sky_lut_generator.setSun(sun_dir,sun_radiance);
+        sky_lut_generator.setSun(sun_dir,sun_intensity * sun_color);
         sky_lut_generator.generate(camera.get_position() * world_scale
                                    ,sky_ray_march_step_count,
                                    enable_multi_scattering,
@@ -665,36 +850,38 @@ private:
                 shadow_generator.getShadowMap(),
                 camera.get_position());
 
-        auto camera_dir = camera.get_xyz_direction();
-        const vec3f world_up = {0.f,1.f,0.f};
+        framebuffer_t::bind_to_default();
+        framebuffer_t::clear_color_depth_buffer();
+
+        if(enable_draw_mesh){
+            mesh_renderer.setSun(sun_dir,sun_intensity * sun_color,sun_proj_view);
+            mesh_renderer.begin(transmittance_generator.getLUT(),
+                                aerial_lut_generator.getLUT(),
+                                shadow_generator.getShadowMap(),
+                                camera.get_view_proj());
+            for(auto& draw_model:draw_models){
+                mesh_renderer.render(draw_model.model,
+                                     draw_model.vao,draw_model.ebo.index_count(),camera.get_position());
+            }
+            mesh_renderer.end();
+        }
 
         if(enable_sky){
+            auto camera_dir = camera.get_xyz_direction();
+            const vec3f world_up = {0.f,1.f,0.f};
             sky_view_renderer.render(sky_lut_generator.getLUT(),
                                      camera_dir,wzz::math::cross(camera_dir,world_up).normalized(),
                                      wzz::math::deg2rad(CameraFovDegree),exposure,enable_tone_mapping);
         }
 
-        if(enable_draw_mesh){
-            mesh_shader.bind();
-            mesh_shader.set_uniform_var("ProjView",camera.get_view_proj());
-            for(auto& draw_model:draw_models){
-                draw_model.vao.bind();
-                mesh_shader.set_uniform_var("Model",draw_model.model);
-
-                GL_EXPR(glDrawElements(GL_TRIANGLES,draw_model.ebo.index_count(),GL_UNSIGNED_INT,nullptr));
-
-                draw_model.vao.unbind();
-            }
-            mesh_shader.unbind();
-        }
-
-        if(enable_sky){
-
-        }
-
 
         if(enable_sun_disk){
-
+            auto model = transform::translate(-10.f * sun_dir) * transform::translate(camera.get_position()) * transform::scale(vec3f(sun_radius));
+            sun_disk_renderer.setSun(sun_dir,sun_intensity * sun_color);
+            sun_disk_renderer.render(transmittance_generator.getLUT(),
+                                     multiScattering_generator.getLUT(),
+                                     camera.get_view_proj() * model,
+                                     camera.get_position().y * world_scale);
         }
 
         ImGui::End();
@@ -736,7 +923,8 @@ private:
     struct{
         float sun_x_degree = 0;
         float sun_y_degree = 60;
-        vec3f sun_radiance = {10.f,10.f,10.f};
+        float sun_intensity = 1.f;
+        vec3f sun_color = vec3(1.f,1.f,1.f);
     };
 
     TransmittanceGenerator transmittance_generator;
@@ -754,6 +942,11 @@ private:
 
     SkyViewRenderer sky_view_renderer;
 
+    MeshRenderer mesh_renderer;
+
+    SunDiskRenderer sun_disk_renderer;
+    float sun_radius = 0.2f;
+
     // render resources control
     bool vsync = true;
     bool enable_draw_mesh = true;
@@ -764,7 +957,7 @@ private:
     bool enable_tone_mapping = false;
 
     float world_scale = 200.f;
-    float exposure = 2.f;
+    float exposure = 10.f;
 
 };
 
@@ -785,7 +978,7 @@ void SkyRenderer::loadModel(const std::string &filename) {
         m.vao.enable_attrib(attrib_var_t<vec3f>(1));
         m.vao.enable_attrib(attrib_var_t<vec2f>(2));
         m.vao.bind_index_buffer(m.ebo);
-
+        m.model = transform::translate(vec3f(0,15.f,0));
     }
 }
 

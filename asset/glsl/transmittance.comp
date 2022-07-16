@@ -49,6 +49,7 @@ void main(){
         return;
     }
 
+    //todo change mapping
     //get altitude and sun / zenith angle
     float theta = asin(mix(-1.0,1.0,(g_index.y + 0.5) / res.y));
     float h = mix(0.0, top_atmosphere_radius - ground_radius, (g_index.x + 0.5) / res.x);
