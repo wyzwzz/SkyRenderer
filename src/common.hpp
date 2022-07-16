@@ -1,7 +1,7 @@
 #pragma once
 #include <CGUtils/api.hpp>
 #include <CGUtils/model.hpp>
-
+#include <CGUtils/image.hpp>
 
 #include <cyPoint.h>
 #include <cySampleElim.h>

@@ -42,3 +42,23 @@ struct AtmosphereProperties{
 
 static_assert(sizeof(AtmosphereProperties) == 64,"");
 
+
+struct alignas(16) CloudProperties{
+    vec3 density_to_sigma_s = vec3(1);
+    float phase_g = 0.8;
+    vec3 density_to_sigma_t = vec3(1);
+    int primary_ray_marching_steps = 64;
+    vec3 box_min = vec3(-50,50,-50);
+    int secondary_ray_marching_steps = 4;
+    vec3 box_max = vec3(50,60,50);
+    int enable_multi_scattering = 0;
+    float g_c = 0.8;
+    float g_d = 1.0;
+    float wc0 = 0.8;
+    float wc1 = 0.9;
+    float wh = 0.8;
+    float shape_tile = 0.03;
+    float detail_tile = 0.11;
+    float blend_alpha = 0.5;
+};
+

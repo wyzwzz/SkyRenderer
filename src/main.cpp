@@ -524,6 +524,13 @@ public:
         linear_sampler.set_param(GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
         linear_sampler.set_param(GL_TEXTURE_WRAP_R,GL_CLAMP_TO_EDGE);
 
+        nearest_sampler.initialize_handle();
+        nearest_sampler.set_param(GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        nearest_sampler.set_param(GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_R,GL_CLAMP_TO_EDGE);
+
         resize(res);
     }
     void resize(const vec2i& res){
@@ -532,7 +539,13 @@ public:
         shader.set_uniform_var("WOverH",res.x * 1.f / res.y);
         shader.unbind();
     }
+    void enableCloud(bool enable_cloud){
+        shader.bind();
+        shader.set_uniform_var("EnableCloud",static_cast<int>(enable_cloud));
+        shader.unbind();
+    }
     void render(const texture2d_t& sky_lut,
+                const texture2d_t& cloud,
                 const vec3& camera_dir,
                 const vec3& camera_right,
                 float camera_fov_rad,
@@ -550,7 +563,10 @@ public:
         GL_EXPR(glViewport(0,0,view_res.x,view_res.y));
         shader.bind();
         sky_lut.bind(0);
+        cloud.bind(1);
         linear_sampler.bind(0);
+        linear_sampler.bind(1);
+
         vao.bind();
 
         GL_EXPR(glDepthFunc(GL_LEQUAL));
@@ -575,6 +591,7 @@ private:
     vertex_array_t vao;
     vec2i view_res;
     sampler_t linear_sampler;
+    sampler_t nearest_sampler;
 };
 
 class SunDiskRenderer{
@@ -650,6 +667,179 @@ private:
     }sun;
 };
 
+class CloudRenderer{
+public:
+    void initialize(const vec2i& res){
+        shader = program_t::build_from(
+                shader_t<GL_VERTEX_SHADER>::from_file("asset/glsl/quad.vert"),
+                shader_t<GL_FRAGMENT_SHADER>::from_file("asset/glsl/cloud.frag"));
+
+
+        linear_sampler.initialize_handle();
+        linear_sampler.set_param(GL_TEXTURE_MIN_FILTER,GL_LINEAR);
+        linear_sampler.set_param(GL_TEXTURE_MAG_FILTER,GL_LINEAR);
+        linear_sampler.set_param(GL_TEXTURE_WRAP_S,GL_REPEAT);
+        linear_sampler.set_param(GL_TEXTURE_WRAP_T,GL_REPEAT);
+        linear_sampler.set_param(GL_TEXTURE_WRAP_R,GL_REPEAT);
+        nearest_sampler.initialize_handle();
+        nearest_sampler.set_param(GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        nearest_sampler.set_param(GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_S,GL_REPEAT);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_T,GL_REPEAT);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_R,GL_REPEAT);
+
+        auto shape_data = wzz::file::read_raw_file_bytes("asset/noiseShapePacked_128_128_128.raw");
+        shape_noise.initialize_handle();
+        shape_noise.initialize_format_and_data(1,GL_RGBA8,128,128,128,reinterpret_cast<vec4b*>(shape_data.data()));
+
+        auto detail_data = wzz::file::read_raw_file_bytes("asset/noiseErosionPacked_32_32_32.raw");
+        detail_noise.initialize_handle();
+        detail_noise.initialize_format_and_data(1,GL_RGBA8,32,32,32,reinterpret_cast<vec4b*>(detail_data.data()));
+
+        auto weather = wzz::image::load_rgba_from_file("asset/weather.png");
+        weather_map.initialize_handle();
+        weather_map.initialize_format_and_data(1,GL_RGBA8,weather);
+
+        auto blue = wzz::image::load_rgba_from_file("asset/bluenoise.png");
+        blue_noise.initialize_handle();
+        blue_noise.initialize_format_and_data(1,GL_RGBA8,blue);
+
+        vao.initialize_handle();
+
+        params_buffer.initialize_handle();
+        params_buffer.reinitialize_buffer_data(nullptr,GL_DYNAMIC_DRAW);
+
+        atmosphere_buffer.initialize_handle();
+        atmosphere_buffer.reinitialize_buffer_data(nullptr,GL_STATIC_DRAW);
+
+        cloud_buffer.initialize_handle();
+        cloud_buffer.reinitialize_buffer_data(nullptr,GL_STATIC_DRAW);
+
+        cloud.fbo.initialize_handle();
+        resize(res);
+    }
+    void resize(const vec2i& res){
+        this->res = res;
+        cloud.rbo.destroy();
+        cloud.rbo.initialize_handle();
+        cloud.rbo.set_format(GL_DEPTH24_STENCIL8,res.x / DownSample,res.y / DownSample);
+        cloud.fbo.attach(GL_DEPTH_STENCIL_ATTACHMENT,cloud.rbo);
+        cloud.color.destroy();
+        cloud.color.initialize_handle();
+        cloud.color.initialize_texture(1,GL_RGBA8,res.x / DownSample,res.y / DownSample);
+        cloud.fbo.attach(GL_COLOR_ATTACHMENT0,cloud.color);
+    }
+    void setAtmosphere(const AtmosphereProperties& atmos){
+        atmosphere_buffer.set_buffer_data(&atmos);
+    }
+    void setCloud(const CloudProperties& cloud){
+        cloud_buffer.set_buffer_data(&cloud);
+    }
+    void setPerspective(float w_over_h,float camera_fov_rad){
+        params.w_over_h = w_over_h;
+        params.scale = tan(camera_fov_rad * 0.5f);
+    }
+    void setSun(const vec3f& sun_dir){
+        params.sun_dir = sun_dir;
+    }
+    void render(const texture2d_t& transmittance,
+                const texture3d_t& aerial_lut,
+                const vec3& camera_dir,
+                const vec3& camera_right,
+                const vec3& camera_pos){
+        params.view_pos = camera_pos;
+        params.camera_dir = camera_dir;
+        params.right = camera_right;
+        params.up = wzz::math::cross(camera_right,camera_dir).normalized();
+
+        atmosphere_buffer.bind(0);
+        cloud_buffer.bind(1);
+
+        params_buffer.set_buffer_data(&params);
+        params_buffer.bind(2);
+
+        weather_map.bind(0);
+        shape_noise.bind(1);
+        detail_noise.bind(2);
+        blue_noise.bind(3);
+        transmittance.bind(4);
+        aerial_lut.bind(5);
+
+        linear_sampler.bind(0);
+        linear_sampler.bind(1);
+        linear_sampler.bind(2);
+        nearest_sampler.bind(3);
+        linear_sampler.bind(4);
+        linear_sampler.bind(5);
+
+        cloud.fbo.bind();
+        cloud.fbo.clear_color_depth_buffer();
+        GL_EXPR(glViewport(0,0,res.x / DownSample,res.y / DownSample));
+
+        shader.bind();
+
+        vao.bind();
+
+        GL_EXPR(glDepthFunc(GL_LEQUAL));
+        GL_EXPR(glDrawArrays(GL_TRIANGLE_STRIP,0,4));
+        GL_EXPR(glDepthFunc(GL_LESS));
+
+        shader.unbind();
+
+        cloud.fbo.unbind();
+        GL_EXPR(glViewport(0,0,res.x,res.y));
+    }
+    const texture2d_t& getLUT() const{
+        return cloud.color;
+    }
+private:
+    static constexpr int DownSample = 4;
+    program_t shader;
+    texture3d_t shape_noise;
+    texture3d_t detail_noise;
+    texture2d_t weather_map;
+    texture2d_t blue_noise;
+    struct{
+        framebuffer_t fbo;
+        renderbuffer_t rbo;
+        texture2d_t color;
+    }cloud;
+    vertex_array_t vao;
+    vec2i res;
+
+    struct alignas(16) CloudParams{
+        vec3 camera_dir;
+        float scale;//tan(fov/2)
+        vec3 up;
+        float w_over_h;
+        vec3 right;float pad0;
+        vec3 view_pos;float pad1;
+        vec3 sun_dir;float pad2;
+    }params;
+    std140_uniform_block_buffer_t<CloudParams> params_buffer;
+    std140_uniform_block_buffer_t<AtmosphereProperties> atmosphere_buffer;
+    std140_uniform_block_buffer_t<CloudProperties> cloud_buffer;
+
+    sampler_t linear_sampler;
+    sampler_t nearest_sampler;
+};
+
+class PostProcessor{
+public:
+    void initialize(){
+        shader = program_t::build_from(
+                shader_t<GL_VERTEX_SHADER>::from_file("quad.vert"),
+                shader_t<GL_FRAGMENT_SHADER>::from_file("post_process.frag"));
+
+
+    }
+    void process(){
+
+    }
+private:
+    program_t shader;
+
+};
 
 class SkyRenderer:public gl_app_t{
 public:
@@ -694,6 +884,7 @@ private:
                                                   enable_shadow,enable_multi_scattering);
 
         sky_view_renderer.initialize(window->get_window_size());
+        sky_view_renderer.enableCloud(enable_cloud);
 
         mesh_renderer.initialize(window->get_window_size());
         mesh_renderer.setAtmosphere(std_unit_atmosphere_properties);
@@ -701,6 +892,11 @@ private:
 
         sun_disk_renderer.initialize(window->get_window_size());
         sun_disk_renderer.setAtmosphere(std_unit_atmosphere_properties);
+
+        cloud_renderer.initialize(window->get_window_size());
+        cloud_renderer.setAtmosphere(std_unit_atmosphere_properties);
+        cloud_renderer.setCloud(cloud_properties);
+        cloud_renderer.setPerspective(window->get_window_w_over_h(),wzz::math::deg2rad(CameraFovDegree));
 
         //camera
         camera.set_position({4.087f,13.7f,3.957f});
@@ -727,6 +923,8 @@ private:
             ImGui::Checkbox("Enable Sky",&enable_sky);
             ImGui::Checkbox("Enable Show Mesh",&enable_draw_mesh);
             ImGui::Checkbox("Enable Sun Disk",&enable_sun_disk);
+            if(ImGui::Checkbox("Enable Cloud",&enable_cloud))
+                sky_view_renderer.enableCloud(enable_cloud);
             ImGui::Checkbox("Enable Tone Mapping",&enable_tone_mapping);
             if(!enable_tone_mapping){
                 ImGui::Text("Using While Point Color Mapping");
@@ -772,6 +970,8 @@ private:
                     mesh_renderer.setAtmosphere(std_unit_atmosphere_properties);
 
                     sun_disk_renderer.setAtmosphere(std_unit_atmosphere_properties);
+
+                    cloud_renderer.setAtmosphere(std_unit_atmosphere_properties);
                 }
                 ImGui::TreePop();
             }
@@ -815,7 +1015,25 @@ private:
             }
 
             if(ImGui::TreeNode("Volumetric Cloud")){
-
+                bool update = false;
+                update |= ImGui::InputFloat3("Cloud Region Low Corner",&cloud_properties.box_min.x);
+                update |= ImGui::InputFloat3("Cloud Region High Corner",&cloud_properties.box_max.x);
+                update |= ImGui::InputFloat3("Density to Sigma S",&cloud_properties.density_to_sigma_s.x);
+                update |= ImGui::InputFloat3("Density to Sigma T",&cloud_properties.density_to_sigma_t.x);
+                update |= ImGui::SliderFloat("Phase G",&cloud_properties.phase_g,-1,1);
+                update |= ImGui::InputInt("Primary Ray March Steps",&cloud_properties.primary_ray_marching_steps);
+                update |= ImGui::InputInt("Secondary Ray March Steps",&cloud_properties.secondary_ray_marching_steps);
+                update |= ImGui::Checkbox("Enable Multi Scattering",reinterpret_cast<bool*>(&cloud_properties.enable_multi_scattering));
+                update |= ImGui::SliderFloat("Global Coverage",&cloud_properties.g_c,0,1);
+                update |= ImGui::SliderFloat("Global Density",&cloud_properties.g_d,0,1);
+                update |= ImGui::SliderFloat("wc0",&cloud_properties.wc0,0,1);
+                update |= ImGui::SliderFloat("wc1",&cloud_properties.wc1,0,1);
+                update |= ImGui::SliderFloat("wh",&cloud_properties.wh,0,1);
+                update |= ImGui::InputFloat("shape tile",&cloud_properties.shape_tile,0.01);
+                update |= ImGui::InputFloat("detail tile",&cloud_properties.detail_tile,0.01);
+                update |= ImGui::SliderFloat("Blend Alpha",&cloud_properties.blend_alpha,0,1);
+                if(update)
+                    cloud_renderer.setCloud(cloud_properties);
                 ImGui::TreePop();
             }
         }
@@ -866,10 +1084,24 @@ private:
             mesh_renderer.end();
         }
 
+        auto camera_dir = camera.get_xyz_direction();
+        const vec3f world_up = {0.f,1.f,0.f};
+
+        if(enable_cloud){
+            cloud_renderer.setSun(sun_dir);
+            cloud_renderer.render(
+                    transmittance_generator.getLUT(),
+                    aerial_lut_generator.getLUT(),
+                    camera_dir,
+                    wzz::math::cross(camera_dir,world_up).normalized(),
+                    camera.get_position());
+
+        }
+
         if(enable_sky){
-            auto camera_dir = camera.get_xyz_direction();
-            const vec3f world_up = {0.f,1.f,0.f};
+
             sky_view_renderer.render(sky_lut_generator.getLUT(),
+                                     cloud_renderer.getLUT(),
                                      camera_dir,wzz::math::cross(camera_dir,world_up).normalized(),
                                      wzz::math::deg2rad(CameraFovDegree),exposure,enable_tone_mapping);
         }
@@ -883,6 +1115,9 @@ private:
                                      camera.get_view_proj() * model,
                                      camera.get_position().y * world_scale);
         }
+
+        post_processor.process();
+
 
         ImGui::End();
         ImGui::PopStyleVar();
@@ -900,11 +1135,13 @@ private:
     AtmosphereProperties preset_atmosphere_properties;
     AtmosphereProperties std_unit_atmosphere_properties;
 
+    CloudProperties cloud_properties;
+
     static constexpr float CameraFovDegree = 60.f;
 
     vec2i transmittance_lut_size = {256,256};
     vec2i multi_scattering_lut_size = {256,256};
-    vec2i sky_lut_size = {192,108};
+    vec2i sky_lut_size = {512,256};
     vec3i aerial_lut_size = {200,150,32};
 
 
@@ -947,6 +1184,10 @@ private:
     SunDiskRenderer sun_disk_renderer;
     float sun_radius = 0.2f;
 
+    CloudRenderer cloud_renderer;
+
+    PostProcessor post_processor;
+
     // render resources control
     bool vsync = true;
     bool enable_draw_mesh = true;
@@ -954,6 +1195,7 @@ private:
     bool enable_shadow = true;
     bool enable_sky = true;
     bool enable_sun_disk = true;
+    bool enable_cloud = true;
     bool enable_tone_mapping = false;
 
     float world_scale = 200.f;
@@ -996,7 +1238,7 @@ std::pair<vec3f, mat4> SkyRenderer::getLight() const{
 
 int main(){
     SkyRenderer(window_desc_t{
-        .size = {1280,720},
+        .size = {1600,900},
         .title = "SkyRenderer",
         .resizeable = false,
         .multisamples = 4,

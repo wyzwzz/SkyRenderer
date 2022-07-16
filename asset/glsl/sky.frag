@@ -15,7 +15,10 @@ layout(std140,binding = 0) uniform SkyParams{
 };
 
 layout(binding = 0) uniform sampler2D SkyView;
+layout(binding = 1) uniform sampler2D Cloud;
+
 uniform float WOverH;
+uniform int EnableCloud;
 
 #define PI 3.14159265
 #define POSTCOLOR_A 2.51
@@ -61,7 +64,16 @@ void main() {
 
     vec3 sky_color = texture(SkyView,vec2(u,v)).rgb;
 
+    //todo move to post process
     sky_color = bool(enable_tone_mapping) ? toneColorMapping(iFragTexCoord,sky_color) : whitePointColorMapping(exposure,sky_color);
 
-    oFragColor = vec4(sky_color,1.0);
+    vec4 cloud_color = vec4(0);
+
+    if(bool(EnableCloud)){
+        cloud_color = texture(Cloud,iFragTexCoord);
+        cloud_color.rgb *= sky_color;
+        cloud_color.rgb = whitePointColorMapping(exposure,cloud_color.rgb);
+    }
+
+    oFragColor = vec4(mix(sky_color,cloud_color.rgb,cloud_color.a),1.0);
 }
