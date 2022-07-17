@@ -81,10 +81,48 @@ vec3 evalPhaseFunction(float h,float u){
     result.z = s.z > 0 ? (pRayleigh * sRayleigh.z + pMie * sMie) / s.z : 0;
     return result;
 }
+//----------------------------------------
+float safeSqrt(float a) {
+    return sqrt(max(a, 0.0));
+}
+
+float clampCosine(float mu) {
+    return clamp(mu, -1.0, 1.0);
+}
+
+float clampDistance(float d) {
+    return max(d, 0.0);
+}
+
+float clampRadius(float r) {
+    return clamp(r, ground_radius, top_atmosphere_radius);
+}
+//余弦定理
+float distanceToTopAtmosphereBoundary(float r,float mu){
+    float discriminant = r * r * (mu * mu - 1.0) + top_atmosphere_radius * top_atmosphere_radius;
+    return clampDistance(-r * mu + safeSqrt(discriminant));
+}
+float getTextureCoordFromUnitRange(float x, int texture_size) {
+    return 0.5 / float(texture_size) + x * (1.0 - 1.0 / float(texture_size));
+}
+vec2 getTransmittanceTextureUvFromRMu(float r, float mu,in ivec2 res){
+    float H =  sqrt(top_atmosphere_radius * top_atmosphere_radius - ground_radius * ground_radius);
+    float rho = safeSqrt(r * r - ground_radius * ground_radius);
+    float d = distanceToTopAtmosphereBoundary(r,mu);
+    float d_min = (top_atmosphere_radius - r);
+    float d_max = rho + H;
+    float x_mu = (d - d_min) / (d_max - d_min);
+    float x_r = rho / H;
+    return vec2(getTextureCoordFromUnitRange(x_mu,res.x),getTextureCoordFromUnitRange(x_r,res.y));
+}
+// theta is view with horizon
 vec3 getTransmittance(float h,float theta){
-    float u = h / (top_atmosphere_radius - ground_radius);
-    float v = 0.5 + 0.5 * sin(theta);
-    return texture(Transmittance, vec2(u, v)).rgb;
+    //    float u = h / (top_atmosphere_radius - ground_radius);
+    //    float v = 0.5 + 0.5 * sin(theta);
+    float r = h * 0.99  + ground_radius;
+    float mu = cos(PI / 2 - theta);
+    vec2 uv = getTransmittanceTextureUvFromRMu(r,mu,textureSize(Transmittance,0));
+    return texture(Transmittance, uv).rgb;
 }
 vec3 getMultiScattering(float h,float theta){
     float u = h / (top_atmosphere_radius - ground_radius);
@@ -112,7 +150,7 @@ void main() {
     float y = (g_index.y + 0.5) / res.y;
     vec3 view_dir = mix(mix(frustum_a,frustum_b,x),mix(frustum_c,frustum_d,x),y);
     vec3 planet_view_pos = vec3(0,view_height + ground_radius,0);
-    float u = dot(-sun_dir,view_dir);
+    float u = dot(sun_dir,-view_dir);
 
     float max_t = 0;
     if(!findClosestIntersectionWithSphere(planet_view_pos,view_dir,ground_radius,max_t)){

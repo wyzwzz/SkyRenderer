@@ -360,7 +360,7 @@ public:
         params_buffer.bind(1);
 
         transmittance.bind(0);
-        transmittance.bind(1);
+        multi_scattering.bind(1);
         shadow_map.bind(2);
         linear_sampler.bind(0);
         linear_sampler.bind(1);
@@ -428,9 +428,13 @@ public:
         nearest_sampler.initialize_handle();
         nearest_sampler.set_param(GL_TEXTURE_MIN_FILTER,GL_NEAREST);
         nearest_sampler.set_param(GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-        nearest_sampler.set_param(GL_TEXTURE_WRAP_S,GL_CLAMP_TO_EDGE);
-        nearest_sampler.set_param(GL_TEXTURE_WRAP_T,GL_CLAMP_TO_EDGE);
-        nearest_sampler.set_param(GL_TEXTURE_WRAP_R,GL_CLAMP_TO_EDGE);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_S,GL_REPEAT);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_T,GL_REPEAT);
+        nearest_sampler.set_param(GL_TEXTURE_WRAP_R,GL_REPEAT);
+
+        blue_noise.initialize_handle();
+        blue_noise.initialize_format_and_data(1,GL_RGBA8,
+                                      wzz::image::load_rgba_from_file("asset/bluenoise.png"));
 
         resize(res);
     };
@@ -457,9 +461,11 @@ public:
         transmittance.bind(0);
         aerial_lut.bind(1);
         shadow_map.bind(2);
+        blue_noise.bind(3);
         linear_sampler.bind(0);
         linear_sampler.bind(1);
         nearest_sampler.bind(2);
+        nearest_sampler.bind(3);
 
         GL_EXPR(glViewport(0,0,res.x,res.y));
         shader.bind();
@@ -503,6 +509,7 @@ private:
     vec2i res;
     sampler_t linear_sampler;
     sampler_t nearest_sampler;
+    texture2d_t blue_noise;
 };
 
 class SkyViewRenderer{
@@ -696,7 +703,7 @@ public:
         detail_noise.initialize_handle();
         detail_noise.initialize_format_and_data(1,GL_RGBA8,32,32,32,reinterpret_cast<vec4b*>(detail_data.data()));
 
-        auto weather = wzz::image::load_rgba_from_file("asset/weather.png");
+        auto weather = wzz::image::load_rgba_from_file("asset/weather1.png");
         weather_map.initialize_handle();
         weather_map.initialize_format_and_data(1,GL_RGBA8,weather);
 
@@ -824,22 +831,7 @@ private:
     sampler_t nearest_sampler;
 };
 
-class PostProcessor{
-public:
-    void initialize(){
-        shader = program_t::build_from(
-                shader_t<GL_VERTEX_SHADER>::from_file("quad.vert"),
-                shader_t<GL_FRAGMENT_SHADER>::from_file("post_process.frag"));
 
-
-    }
-    void process(){
-
-    }
-private:
-    program_t shader;
-
-};
 
 class SkyRenderer:public gl_app_t{
 public:
@@ -854,7 +846,7 @@ private:
 
 
         // load model
-        loadModel("asset/terrain5.obj");
+        loadModel("asset/terrain.obj");
 
 
         mesh_shader = program_t::build_from(
@@ -899,9 +891,9 @@ private:
         cloud_renderer.setPerspective(window->get_window_w_over_h(),wzz::math::deg2rad(CameraFovDegree));
 
         //camera
-        camera.set_position({4.087f,13.7f,3.957f});
+        camera.set_position({4.087f,26.7f,3.957f});
         camera.set_perspective(CameraFovDegree,0.1f,100.f);
-        camera.set_direction(-PI,0);
+        camera.set_direction(0,0.12);
     }
 
     void frame() override{
@@ -999,13 +991,13 @@ private:
             if(update_world_scale || update_aerial || update_setting)
                 aerial_lut_generator.setAerialPerspective(world_scale,max_aerial_distance,ray_marching_steps_per_slice,
                                                       enable_shadow,enable_multi_scattering);
-            if(update_aerial)
+            if(update_aerial || update_world_scale)
                 mesh_renderer.setAerialPerspective(max_aerial_distance,world_scale);
 
             ImGui::SetNextItemOpen(true,ImGuiCond_Once);
             if(ImGui::TreeNode("Sun")){
                 ImGui::SliderFloat("Sun X Degree",&sun_x_degree,0,360);
-                ImGui::SliderFloat("Sun Y Degree",&sun_y_degree,-5.f,90);
+                ImGui::SliderFloat("Sun Y Degree",&sun_y_degree,-10.f,80);
 //                ImGui::InputFloat("Sun Y Degree",&sun_y_degree,0.01f);
 //                sun_y_degree = std::clamp(sun_y_degree,-0.5f,90.f);
                 ImGui::InputFloat("Sun Intensity",&sun_intensity);
@@ -1116,7 +1108,6 @@ private:
                                      camera.get_position().y * world_scale);
         }
 
-        post_processor.process();
 
 
         ImGui::End();
@@ -1139,7 +1130,7 @@ private:
 
     static constexpr float CameraFovDegree = 60.f;
 
-    vec2i transmittance_lut_size = {256,256};
+    vec2i transmittance_lut_size = {1024,256};
     vec2i multi_scattering_lut_size = {256,256};
     vec2i sky_lut_size = {512,256};
     vec3i aerial_lut_size = {200,150,32};
@@ -1159,7 +1150,7 @@ private:
 
     struct{
         float sun_x_degree = 0;
-        float sun_y_degree = 60;
+        float sun_y_degree = 30;
         float sun_intensity = 1.f;
         vec3f sun_color = vec3(1.f,1.f,1.f);
     };
@@ -1182,11 +1173,10 @@ private:
     MeshRenderer mesh_renderer;
 
     SunDiskRenderer sun_disk_renderer;
-    float sun_radius = 0.2f;
+    float sun_radius = 0.07f;
 
     CloudRenderer cloud_renderer;
 
-    PostProcessor post_processor;
 
     // render resources control
     bool vsync = true;
@@ -1198,7 +1188,7 @@ private:
     bool enable_cloud = true;
     bool enable_tone_mapping = false;
 
-    float world_scale = 200.f;
+    float world_scale = 50.f;
     float exposure = 10.f;
 
 };

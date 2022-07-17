@@ -41,6 +41,65 @@ bool findClosestIntersectionWithCircle(vec2 o, vec2 d, float R, out float t){
     t = (-B + (C <= 0 ? sqrt(delta) : -sqrt(delta))) / (2 * A);
     return (C <= 0) || (B <= 0);
 }
+//----------------------------------------
+float safeSqrt(float a) {
+    return sqrt(max(a, 0.0));
+}
+
+float clampCosine(float mu) {
+    return clamp(mu, -1.0, 1.0);
+}
+
+float clampDistance(float d) {
+    return max(d, 0.0);
+}
+
+float clampRadius(float r) {
+    return clamp(r, ground_radius, top_atmosphere_radius);
+}
+
+// mapping form [0, 1] to [0.5 / n, 1 - 0.5 / n]
+float getTextureCoordFromUnitRange(float x, int texture_size) {
+    return 0.5 / float(texture_size) + x * (1.0 - 1.0 / float(texture_size));
+}
+
+float getUnitRangeFromTextureCoord(float u, int texture_size) {
+    return (u - 0.5 / float(texture_size)) / (1.0 - 1.0 / float(texture_size));
+}
+
+//余弦定理
+float distanceToTopAtmosphereBoundary(float r,float mu){
+    float discriminant = r * r * (mu * mu - 1.0) + top_atmosphere_radius * top_atmosphere_radius;
+    return clampDistance(-r * mu + safeSqrt(discriminant));
+}
+
+
+// r, height from planet center
+vec2 getTransmittanceTextureUvFromRMu(float r, float mu,in ivec2 res){
+    float H =  sqrt(top_atmosphere_radius * top_atmosphere_radius - ground_radius * ground_radius);
+    float rho = safeSqrt(r * r - ground_radius * ground_radius);
+    float d = distanceToTopAtmosphereBoundary(r,mu);
+    float d_min = (top_atmosphere_radius - r);
+    float d_max = rho + H;
+    float x_mu = (d - d_min) / (d_max - d_min);
+    float x_r = rho / H;
+    return vec2(getTextureCoordFromUnitRange(x_mu,res.x),getTextureCoordFromUnitRange(x_r,res.y));
+}
+
+vec2 getRMuFromTransmittanceTextureUv(vec2 uv,in ivec2 res){
+    float x_mu = getUnitRangeFromTextureCoord(uv.x,res.x);
+    float x_r = getUnitRangeFromTextureCoord(uv.y,res.y);
+
+    float H = sqrt(top_atmosphere_radius * top_atmosphere_radius - ground_radius * ground_radius);
+    float rho = H * x_r;
+    float r = sqrt(rho * rho + ground_radius * ground_radius);
+    float d_min = top_atmosphere_radius - r;
+    float d_max = rho + H;
+    float d = d_min + x_mu * (d_max - d_min);
+    float mu = d == 0.0 ? 1.0 : (H * H - rho * rho - d * d) / (2.0 * r * d);
+    mu = clampCosine(mu);
+    return vec2(mu,r);
+}
 
 void main(){
     ivec2 res = imageSize(Transmittance);
@@ -51,17 +110,23 @@ void main(){
 
     //todo change mapping
     //get altitude and sun / zenith angle
-    float theta = asin(mix(-1.0,1.0,(g_index.y + 0.5) / res.y));
-    float h = mix(0.0, top_atmosphere_radius - ground_radius, (g_index.x + 0.5) / res.x);
-
+//    float theta = asin(mix(-1.0,1.0,(g_index.y + 0.5) / res.y));
+//    float h = mix(0.0, top_atmosphere_radius - ground_radius, (g_index.x + 0.5) / res.x);
+    vec2 ret = getRMuFromTransmittanceTextureUv(vec2(g_index + 0.5) / vec2(res),res);
+    float r = ret.y;
+    float cos_theta = ret.x;
+    float sin_theta = safeSqrt(1 - cos_theta * cos_theta);
+//    imageStore(Transmittance,g_index,vec4(r - ground_radius,cos_theta,0.0,1.0));
+//    return;
     //isotropic for phi so just use 2d-coord instead of 3d-coord and use circle instead of sphere
-    vec2 c = vec2(0.0,ground_radius + h);
-    vec2 v = vec2(cos(theta),sin(theta));
+    vec2 c = vec2(0.0,r);
+    vec2 v = vec2(sin_theta,cos_theta);
 
     float t = 0;
-    if(!findClosestIntersectionWithCircle(c,v,ground_radius,t)){
+//    if(!findClosestIntersectionWithCircle(c,v,ground_radius,t)){
+        // will not intersect with ground, ok.
         findClosestIntersectionWithCircle(c,v,top_atmosphere_radius,t);
-    }
+//    }
     vec2 p = c + v * t;
 
     vec3 sum = vec3(0);
