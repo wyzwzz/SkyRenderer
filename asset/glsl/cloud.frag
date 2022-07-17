@@ -7,7 +7,7 @@ layout(location = 1) in vec2 iScreenCoord;
 
 layout(location = 0) out vec4 oFragColor;
 
-layout(std140,binding = 0) uniform AtmosphereProperties{
+layout(std140, binding = 0) uniform AtmosphereProperties{
     vec3 rayleigh_scattering;
     float rayleigh_density_h;
 
@@ -23,7 +23,7 @@ layout(std140,binding = 0) uniform AtmosphereProperties{
     float ground_radius;
     float top_atmosphere_radius;
 };
-layout(std140,binding = 1) uniform CloudProperties{
+layout(std140, binding = 1) uniform CloudProperties{
     vec3 density_to_sigma_s;
     float phase_g;
     vec3 density_to_sigma_t;
@@ -41,7 +41,7 @@ layout(std140,binding = 1) uniform CloudProperties{
     float detail_tile;
     float blend_alpha;
 };
-layout(std140,binding = 2) uniform CloudParams{
+layout(std140, binding = 2) uniform CloudParams{
     vec3 camera_dir;
     float scale;//tan(fov/2)
     vec3 up;
@@ -59,10 +59,40 @@ layout(binding = 4) uniform sampler2D Transmittance;
 layout(binding = 5) uniform sampler3D AerialPerspective;
 
 
-vec3 getTransmittance(float h,float theta){
-    float u = h / (top_atmosphere_radius - ground_radius);
-    float v = 0.5 + 0.5 * sin(theta);
-    return texture(Transmittance, vec2(u, v)).rgb;
+float safeSqrt(float a) {
+    return sqrt(max(a, 0.0));
+}
+
+float clampDistance(float d) {
+    return max(d, 0.0);
+}
+
+float distanceToTopAtmosphereBoundary(float r, float mu){
+    float discriminant = r * r * (mu * mu - 1.0) + top_atmosphere_radius * top_atmosphere_radius;
+    return clampDistance(-r * mu + safeSqrt(discriminant));
+}
+
+float getTextureCoordFromUnitRange(float x, int texture_size) {
+    return 0.5 / float(texture_size) + x * (1.0 - 1.0 / float(texture_size));
+}
+
+vec2 getTransmittanceTextureUvFromRMu(float r, float mu, in ivec2 res){
+    float H =  sqrt(top_atmosphere_radius * top_atmosphere_radius - ground_radius * ground_radius);
+    float rho = safeSqrt(r * r - ground_radius * ground_radius);
+    float d = distanceToTopAtmosphereBoundary(r, mu);
+    float d_min = (top_atmosphere_radius - r);
+    float d_max = rho + H;
+    float x_mu = (d - d_min) / (d_max - d_min);
+    float x_r = rho / H;
+    return vec2(getTextureCoordFromUnitRange(x_mu, res.x), getTextureCoordFromUnitRange(x_r, res.y));
+}
+
+// theta is view with horizon
+vec3 getTransmittance(float h, float theta){
+    float r = h * 0.99  + ground_radius;
+    float mu = cos(PI / 2 - theta);
+    vec2 uv = getTransmittanceTextureUvFromRMu(r, mu, textureSize(Transmittance, 0));
+    return texture(Transmittance, uv).rgb;
 }
 
 float remap(float original_value, float original_min, float original_max, float new_min, float new_max)
@@ -71,31 +101,31 @@ float remap(float original_value, float original_min, float original_max, float 
 }
 
 float saturate(float x){
-    return clamp(x,0.0,1.0);
+    return clamp(x, 0.0, 1.0);
 }
 
 vec2 saturate(vec2 x){
-    return clamp(x,vec2(0.0),vec2(1.0));
+    return clamp(x, vec2(0.0), vec2(1.0));
 }
 
 vec3 saturate(vec3 x){
-    return clamp(x,vec3(0.0),vec3(1.0));
+    return clamp(x, vec3(0.0), vec3(1.0));
 }
 
-bool insideBox(vec3 pos,vec3 box_min,vec3 box_max){
+bool insideBox(vec3 pos, vec3 box_min, vec3 box_max){
     return pos.x >= box_min.x && pos.x <= box_max.x
     && pos.y >= box_min.y && pos.y <= box_max.y
     && pos.z >= box_min.z && pos.z <= box_max.z;
 }
 
-vec2 rayIntersectBox(vec3 box_min,vec3 box_max,vec3 ray_origin,vec3 inv_ray_dir){
+vec2 rayIntersectBox(vec3 box_min, vec3 box_max, vec3 ray_origin, vec3 inv_ray_dir){
     vec3 t0 = (box_min - ray_origin) * inv_ray_dir;
     vec3 t1 = (box_max - ray_origin) * inv_ray_dir;
-    vec3 t_min = min(t0,t1);
-    vec3 t_max = max(t0,t1);
-    float enter_t = max(max(t_min.x,t_min.y),t_min.z);
-    float exit_t  = min(min(t_max.x,t_max.y),t_max.z);
-    return vec2(enter_t,exit_t);//exit_t > enter_t && exit_t > 0
+    vec3 t_min = min(t0, t1);
+    vec3 t_max = max(t0, t1);
+    float enter_t = max(max(t_min.x, t_min.y), t_min.z);
+    float exit_t  = min(min(t_max.x, t_max.y), t_max.z);
+    return vec2(enter_t, exit_t);//exit_t > enter_t && exit_t > 0
 }
 
 vec3 evalPhaseFunction(float u){
@@ -109,7 +139,7 @@ vec3 evalPhaseFunction(float u){
 
     vec3 pu = vec3(abs(3 / (16 * PI) * (1 + u2)));
 
-    return mix(pu,vec3(ph),blend_alpha) * 0.6 + vec3(0.4);
+    return mix(pu, vec3(ph), blend_alpha) * 0.6 + vec3(0.4);
 }
 
 
@@ -123,54 +153,53 @@ float sampleDensity(vec3 pos){
     float dstFromEdgeZ = min(containerEdgeFadeDst, min(pos.z - box_min.z, box_max.z - pos.z));
     float edgeWeight = min(dstFromEdgeZ, dstFromEdgeX) / containerEdgeFadeDst;
 
-    float wd = texture(WeatherMap,uv).r;
+    float wd = texture(WeatherMap, uv).r;
 
-    const float WMc = max(wc0,saturate(g_c - 0.5) * wc1 * 2);
+    const float WMc = max(wc0, saturate(g_c - 0.5) * wc1 * 2);
     float ph = saturate((pos.y - box_min.y) / box_size.y);
 
-    float SRb = saturate(remap(ph,0,0.07,0,1));
-    float SRt = saturate(remap(ph,wh*0.2,wh,1,0));
+    float SRb = saturate(remap(ph, 0, 0.07, 0, 1));
+    float SRt = saturate(remap(ph, wh*0.2, wh, 1, 0));
     float SA = SRb * SRt;
 
-    float DRb = ph * saturate(remap(ph,0,0.15,0,1));
-    float DRt = saturate(remap(ph,0.9,1.0,1,0));
+    float DRb = ph * saturate(remap(ph, 0, 0.15, 0, 1));
+    float DRt = saturate(remap(ph, 0.9, 1.0, 1, 0));
     float DA = g_d * DRb * DRt * wd * 2;
 
-    float SN = texture(ShapeNoise,pos * shape_tile).r;
+    float SN = texture(ShapeNoise, pos * shape_tile).r;
 
-    SN = remap(SN * SA,1 - g_c * WMc,1, 0, 1) * DA * edgeWeight;
+    SN = remap(SN * SA, 1 - g_c * WMc, 1, 0, 1) * DA * edgeWeight;
 
-    float DN_fbm = texture(DetailNoise,pos * detail_tile).r;
-    float DN_mod = 0.35 * exp(-g_c * 0.75) * mix(DN_fbm,1 - DN_fbm,saturate(ph * 5));
+    float DN_fbm = texture(DetailNoise, pos * detail_tile).r;
+    float DN_mod = 0.35 * exp(-g_c * 0.75) * mix(DN_fbm, 1 - DN_fbm, saturate(ph * 5));
 
-    float d = saturate(remap(SN,DN_mod,1,0,1));
+    float d = saturate(remap(SN, DN_mod, 1, 0, 1));
     return d;
 }
 
 vec3 singleScattering(vec3 pos){
     //ray marching toward sun
     vec3 ray_dir = -sun_dir;
-    vec2 intersect_t = rayIntersectBox(box_min,box_max,pos,1.0 / (ray_dir ));
-    float ray_march_dist = max(0,intersect_t.y);
+    vec2 intersect_t = rayIntersectBox(box_min, box_max, pos, 1.0 / (ray_dir));
+    float ray_march_dist = max(0, intersect_t.y);
     float dt = ray_march_dist / secondary_ray_marching_steps;
     vec3 sum_sigma_t = vec3(0);
-    for(int i = 0; i < secondary_ray_marching_steps; ++i){
+    for (int i = 0; i < secondary_ray_marching_steps; ++i){
         vec3 ith_pos = pos + (i + 0.5) * ray_dir * dt;
         sum_sigma_t += sampleDensity(ith_pos) * density_to_sigma_t * dt;
     }
-    //todo pos correct with world scale
-    return getTransmittance(pos.y,asin(ray_dir.y)) * exp(-sum_sigma_t);
+    return getTransmittance(pos.y, asin(ray_dir.y)) * exp(-sum_sigma_t);
 }
 
-vec4 cloudRayMarching(vec3 start_pos,vec3 ray_dir,float max_ray_advance_dist){
+vec4 cloudRayMarching(vec3 start_pos, vec3 ray_dir, float max_ray_advance_dist){
 
     vec3 sum_sigma_t = vec3(0);
     float dt = max_ray_advance_dist / primary_ray_marching_steps;
     vec3 accu_radiance = vec3(0);
 
-    float blue_noise = texture(BlueNoise,iUV).r;
-    float advanced_dist = dt * blue_noise ;
-    for(int i = 0; i < primary_ray_marching_steps; ++i){
+    float blue_noise = texture(BlueNoise, iUV).r;
+    float advanced_dist = dt * blue_noise;
+    for (int i = 0; i < primary_ray_marching_steps; ++i){
         vec3 ith_pos = start_pos + advanced_dist * ray_dir;
 
         vec3 ith_single_scattering = singleScattering(ith_pos);
@@ -181,13 +210,13 @@ vec4 cloudRayMarching(vec3 start_pos,vec3 ray_dir,float max_ray_advance_dist){
 
         vec3 sigma_s = density *  density_to_sigma_s;
 
-        vec3 rho = evalPhaseFunction(dot(sun_dir,-ray_dir));
+        vec3 rho = evalPhaseFunction(dot(sun_dir, -ray_dir));
 
         vec3 ith_transmittance = vec3(exp(-sum_sigma_t));
 
         accu_radiance += ith_single_scattering * sigma_s * rho *  ith_transmittance * dt;
 
-        if( all( lessThan( ith_transmittance,vec3(0.01) ) ) )
+        if (all(lessThan(ith_transmittance, vec3(0.01))))
             break;
 
         advanced_dist += dt;
@@ -200,14 +229,11 @@ void main() {
 
     vec3 view_dir = normalize(camera_dir + w_over_h * scale * right * iScreenCoord.x + scale * up * iScreenCoord.y);
 
-    vec2 intersect_t = rayIntersectBox(box_min,box_max,view_pos,1.0 / view_dir);
-
-
-    //todo use aerial lut
+    vec2 intersect_t = rayIntersectBox(box_min, box_max, view_pos, 1.0 / view_dir);
 
     vec4 cloud_color = vec4(0);
-    if(intersect_t.y > 0 && intersect_t.y > intersect_t.x){
-        cloud_color = cloudRayMarching(view_pos + view_dir * max(0,intersect_t.x),view_dir,intersect_t.y - max(0,intersect_t.x));
+    if (intersect_t.y > 0 && intersect_t.y > intersect_t.x){
+        cloud_color = cloudRayMarching(view_pos + view_dir * max(0, intersect_t.x), view_dir, intersect_t.y - max(0, intersect_t.x));
     }
 
     oFragColor = cloud_color;

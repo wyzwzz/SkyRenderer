@@ -19,6 +19,6 @@ vec3 postProcessColor(vec2 seed, vec3 color)
 void main() {
     vec3 color;
     color = iTransmittance * SunRadiance;
-    color = postProcessColor(iClipPos.xy/iClipPos.w,color);
-    oFragColor = vec4(color,1.0);
+    color = postProcessColor(iClipPos.xy/iClipPos.w, color);
+    oFragColor = vec4(color, 1.0);
 }

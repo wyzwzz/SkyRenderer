@@ -14,10 +14,10 @@ layout(location = 3) out vec4 oScreenCoord;
 
 void main() {
     gl_Position = ProjView * Model * (vec4(iVertexPos, 1.0));
-    oVertexPos = vec3(Model * vec4(iVertexPos,1.f));
+    oVertexPos = vec3(Model * vec4(iVertexPos, 1.f));
     //ok for simple scale or rotate or transform
-    oVertexNormal = vec3(Model * vec4(iVertexNormal,0.0));
+    oVertexNormal = vec3(Model * vec4(iVertexNormal, 0.0));
     oTexCoord = iTexCoord;
-    //todo out vec2: xy/w
+
     oScreenCoord = gl_Position;// -1 ~ 1 for xyz/w
 }

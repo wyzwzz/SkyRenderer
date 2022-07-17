@@ -1,8 +1,10 @@
 #version 460 core
 
+#define PI 3.14159265
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(std140,binding = 0) uniform AtmosphereProperties{
+layout(std140, binding = 0) uniform AtmosphereProperties{
     vec3 rayleigh_scattering;
     float rayleigh_density_h;
 
@@ -19,7 +21,7 @@ layout(std140,binding = 0) uniform AtmosphereProperties{
     float top_atmosphere_radius;
 };
 
-layout(std140,binding = 1) uniform MultiScatteringParams{
+layout(std140, binding = 1) uniform MultiScatteringParams{
     vec3 ground_albedo;
     int dir_sample_count;
 
@@ -27,21 +29,20 @@ layout(std140,binding = 1) uniform MultiScatteringParams{
     int ray_march_step_count;
 };
 
-layout(std430,binding = 0) buffer RandomSamples{
+layout(std430, binding = 0) buffer RandomSamples{
     vec2 raw_dir_samples[];
 };
 
-layout(rgba32f,binding = 0) uniform image2D MultiScattering;
+layout(rgba32f, binding = 0) uniform image2D MultiScattering;
 
 layout(binding = 0)uniform sampler2D Transmittance;
 
-#define PI 3.14159265
 
-vec3 uniformSamplingSphere(float u,float v){
+vec3 uniformSamplingSphere(float u, float v){
     float z = 1 - 2 * u;
-    float r = sqrt(max(0,1 - z * z));
+    float r = sqrt(max(0, 1 - z * z));
     float phi = 2 * PI * v;
-    return vec3(r * cos(phi),r * sin(phi), z);
+    return vec3(r * cos(phi), r * sin(phi), z);
 }
 
 bool findClosestIntersectionWithSphere(vec3 o, vec3 d, float R, out float t){
@@ -49,8 +50,8 @@ bool findClosestIntersectionWithSphere(vec3 o, vec3 d, float R, out float t){
     float B = 2 * dot(o, d);
     float C = dot(o, o) - R * R;
     float delta = B * B - 4 * A * C;
-    if(delta < 0)
-    return false;
+    if (delta < 0)
+        return false;
     t = (-B + (C <= 0 ? sqrt(delta) : -sqrt(delta))) / (2 * A);
     return (C <= 0) || (B <= 0);
 }
@@ -63,15 +64,16 @@ bool hasIntersectionWithSphere(vec3 o, vec3 d, float R){
     return (delta >= 0) && ((C <= 0) || (B <= 0));
 }
 
-void getSigmaST(float h,out vec3 sigma_s,out vec3 sigma_t){
+void getSigmaST(float h, out vec3 sigma_s, out vec3 sigma_t){
     vec3 rayleigh = rayleigh_scattering * exp(-h / rayleigh_density_h);
     vec3 mie_s = vec3(mie_scattering) * exp(-h / mie_density_h);
     vec3 mie_t = vec3(mie_scattering + mie_absorption) * exp(-h / mie_density_h);
-    vec3 ozone = ozone_absorption * max(0.0,1 - abs(h - ozone_center_h) / (ozone_width * 0.5));
+    vec3 ozone = ozone_absorption * max(0.0, 1 - abs(h - ozone_center_h) / (ozone_width * 0.5));
     sigma_s = rayleigh + mie_s;
     sigma_t = rayleigh + mie_t + ozone;
 }
-vec3 evalPhaseFunction(float h,float u){
+
+vec3 evalPhaseFunction(float h, float u){
     vec3 sRayleigh = rayleigh_scattering * exp(-h / rayleigh_density_h);
     float sMie = mie_scattering * exp(-h / mie_density_h);
     vec3 s = sRayleigh + sMie;
@@ -88,56 +90,49 @@ vec3 evalPhaseFunction(float h,float u){
     result.z = s.z > 0 ? (pRayleigh * sRayleigh.z + pMie * sMie) / s.z : 0;
     return result;
 }
-//----------------------------------------
+
 float safeSqrt(float a) {
     return sqrt(max(a, 0.0));
-}
-
-float clampCosine(float mu) {
-    return clamp(mu, -1.0, 1.0);
 }
 
 float clampDistance(float d) {
     return max(d, 0.0);
 }
 
-float clampRadius(float r) {
-    return clamp(r, ground_radius, top_atmosphere_radius);
-}
-//余弦定理
-float distanceToTopAtmosphereBoundary(float r,float mu){
+float distanceToTopAtmosphereBoundary(float r, float mu){
     float discriminant = r * r * (mu * mu - 1.0) + top_atmosphere_radius * top_atmosphere_radius;
     return clampDistance(-r * mu + safeSqrt(discriminant));
 }
+
 float getTextureCoordFromUnitRange(float x, int texture_size) {
     return 0.5 / float(texture_size) + x * (1.0 - 1.0 / float(texture_size));
 }
-vec2 getTransmittanceTextureUvFromRMu(float r, float mu,in ivec2 res){
+
+vec2 getTransmittanceTextureUvFromRMu(float r, float mu, in ivec2 res){
     float H =  sqrt(top_atmosphere_radius * top_atmosphere_radius - ground_radius * ground_radius);
     float rho = safeSqrt(r * r - ground_radius * ground_radius);
-    float d = distanceToTopAtmosphereBoundary(r,mu);
+    float d = distanceToTopAtmosphereBoundary(r, mu);
     float d_min = (top_atmosphere_radius - r);
     float d_max = rho + H;
     float x_mu = (d - d_min) / (d_max - d_min);
     float x_r = rho / H;
-    return vec2(getTextureCoordFromUnitRange(x_mu,res.x),getTextureCoordFromUnitRange(x_r,res.y));
+    return vec2(getTextureCoordFromUnitRange(x_mu, res.x), getTextureCoordFromUnitRange(x_r, res.y));
 }
 
 // theta is view with horizon
-vec3 getTransmittance(float h,float theta){
-//    float u = h / (top_atmosphere_radius - ground_radius);
-//    float v = 0.5 + 0.5 * sin(theta);
+vec3 getTransmittance(float h, float theta){
     float r = h * 0.99  + ground_radius;
     float mu = cos(PI / 2 - theta);
-    vec2 uv = getTransmittanceTextureUvFromRMu(r,mu,textureSize(Transmittance,0));
+    vec2 uv = getTransmittanceTextureUvFromRMu(r, mu, textureSize(Transmittance, 0));
     return texture(Transmittance, uv).rgb;
 }
-void solveSecondScatteringIntegrate(in vec3 view_pos,in vec3 view_dir,in float theta,in vec3 view_sun_dir,out vec3 l,out vec3 f){
-    float u = dot(view_dir,view_sun_dir);
+
+void solveSecondScatteringIntegrate(in vec3 view_pos, in vec3 view_dir, in float theta, in vec3 view_sun_dir, out vec3 l, out vec3 f){
+    float u = dot(view_dir, view_sun_dir);
     float end_t = 0;
-    bool intersect_ground = findClosestIntersectionWithSphere(view_pos,view_dir,ground_radius,end_t);
-    if(!intersect_ground){
-        findClosestIntersectionWithSphere(view_pos,view_dir,top_atmosphere_radius,end_t);
+    bool intersect_ground = findClosestIntersectionWithSphere(view_pos, view_dir, ground_radius, end_t);
+    if (!intersect_ground){
+        findClosestIntersectionWithSphere(view_pos, view_dir, top_atmosphere_radius, end_t);
     }
     float dt = end_t / ray_march_step_count;
     float half_dt = 0.5 * dt;
@@ -145,54 +140,54 @@ void solveSecondScatteringIntegrate(in vec3 view_pos,in vec3 view_dir,in float t
     vec3 l_2nd = vec3(0);
     vec3 f_ms = vec3(0);
     vec3 sum_sigma_t = vec3(0);
-    for(int i = 0; i < ray_march_step_count; ++i){
+    for (int i = 0; i < ray_march_step_count; ++i){
         float mid_t = t + half_dt;
         t += dt;
 
         vec3 ith_pos = view_pos + mid_t * view_dir;
         float ith_h = length(ith_pos) - ground_radius;
 
-        vec3 ith_sigma_s,ith_sigma_t;
-        getSigmaST(ith_h,ith_sigma_s,ith_sigma_t);
+        vec3 ith_sigma_s, ith_sigma_t;
+        getSigmaST(ith_h, ith_sigma_s, ith_sigma_t);
 
         vec3 ith_transmittance = exp(-(sum_sigma_t + ith_sigma_t * half_dt));
 
         //radiance from top atmosphere
         //not consider ground reflection
-        if(!hasIntersectionWithSphere(ith_pos,view_sun_dir,ground_radius)){
-            vec3 rho = evalPhaseFunction(ith_h,u);
-            vec3 ith_sun_transmittance = getTransmittance(ith_h,theta);
+        if (!hasIntersectionWithSphere(ith_pos, view_sun_dir, ground_radius)){
+            vec3 rho = evalPhaseFunction(ith_h, u);
+            vec3 ith_sun_transmittance = getTransmittance(ith_h, theta);
             l_2nd += sun_intensity * ith_sun_transmittance * ith_sigma_s * rho * ith_transmittance * dt;
         }
         f_ms += ith_sigma_s * ith_transmittance * dt;
         sum_sigma_t += ith_sigma_t * dt;
     }
     //add ground reflection part
-    if(intersect_ground){
+    if (intersect_ground){
         vec3 ground_transmittance = exp(-sum_sigma_t);
-        vec3 ground_sun_transmittance = getTransmittance(0,theta);
-        l_2nd += sun_intensity * ground_sun_transmittance * max(0,view_sun_dir.y) * (ground_albedo / PI) * ground_transmittance;
+        vec3 ground_sun_transmittance = getTransmittance(0, theta);
+        l_2nd += sun_intensity * ground_sun_transmittance * max(0, view_sun_dir.y) * (ground_albedo / PI) * ground_transmittance;
     }
     l = l_2nd;
     f = f_ms;
 }
 
-vec3 computeMultiScattering(float h,float theta){
-    vec3 view_pos = vec3(0,h + ground_radius,0);
-    vec3 view_sun_dir = vec3(cos(theta),sin(theta),0);
+vec3 computeMultiScattering(float h, float theta){
+    vec3 view_pos = vec3(0, h + ground_radius, 0);
+    vec3 view_sun_dir = vec3(cos(theta), sin(theta), 0);
     vec3 l_2nd_order = vec3(0);
     vec3 f_ms = vec3(0);
-    //todo
+
     float d_omege = 4 * PI / dir_sample_count;
 
-    for(int i = 0; i < dir_sample_count; ++i){
+    for (int i = 0; i < dir_sample_count; ++i){
         vec2 raw_sample = raw_dir_samples[i];
-        vec3 view_dir = uniformSamplingSphere(raw_sample.x,raw_sample.y);
+        vec3 view_dir = uniformSamplingSphere(raw_sample.x, raw_sample.y);
 
         vec3 ith_l_2nd_order = vec3(0);
         vec3 ith_f_ms = vec3(0);
 
-        solveSecondScatteringIntegrate(view_pos,view_dir,theta,view_sun_dir,ith_l_2nd_order,ith_f_ms);
+        solveSecondScatteringIntegrate(view_pos, view_dir, theta, view_sun_dir, ith_l_2nd_order, ith_f_ms);
 
         //pu = 1 / 4 * PI for isotropic phase function
 
@@ -207,13 +202,13 @@ vec3 computeMultiScattering(float h,float theta){
 void main() {
     ivec2 res = imageSize(MultiScattering);
     ivec2 g_index = ivec2(gl_WorkGroupSize.xy * gl_WorkGroupID.xy + gl_LocalInvocationID.xy);
-    if(g_index.x >= res.x || g_index.y >= res.y){
+    if (g_index.x >= res.x || g_index.y >= res.y){
         return;
     }
 
     //get altitude and sun / zenith angle
-    float theta = asin(mix(-1.0,1.0,(g_index.y + 0.5) / res.y));
+    float theta = asin(mix(-1.0, 1.0, (g_index.y + 0.5) / res.y));
     float h = mix(0.0, top_atmosphere_radius - ground_radius, (g_index.x + 0.5) / res.x);
 
-    imageStore(MultiScattering,g_index,vec4(computeMultiScattering(h,theta),1.0));
+    imageStore(MultiScattering, g_index, vec4(computeMultiScattering(h, theta), 1.0));
 }

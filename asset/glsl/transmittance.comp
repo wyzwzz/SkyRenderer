@@ -1,13 +1,13 @@
 #version 460 core
 
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-
 #define STEP_COUNT 1000
 
-//no rgb32f
-layout(rgba32f,binding = 0) uniform image2D Transmittance;
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(std140,binding = 0) uniform AtmosphereProperties{
+//no rgb32f
+layout(rgba32f, binding = 0) uniform image2D Transmittance;
+
+layout(std140, binding = 0) uniform AtmosphereProperties{
     vec3 rayleigh_scattering;
     float rayleigh_density_h;
 
@@ -27,7 +27,7 @@ layout(std140,binding = 0) uniform AtmosphereProperties{
 vec3 getSigmaT(float h){
     vec3 rayleigh = rayleigh_scattering * exp(-h / rayleigh_density_h);
     vec3 mie = vec3(mie_scattering + mie_absorption) * exp(-h / mie_density_h);
-    vec3 ozone = ozone_absorption * max(0.0,1 - abs(h - ozone_center_h) / (ozone_width * 0.5));
+    vec3 ozone = ozone_absorption * max(0.0, 1 - abs(h - ozone_center_h) / (ozone_width * 0.5));
     return rayleigh + mie + ozone;
 }
 
@@ -36,12 +36,12 @@ bool findClosestIntersectionWithCircle(vec2 o, vec2 d, float R, out float t){
     float B = 2 * dot(o, d);
     float C = dot(o, o) - R * R;
     float delta = B * B - 4 * A * C;
-    if(delta < 0)
-    return false;
+    if (delta < 0)
+        return false;
     t = (-B + (C <= 0 ? sqrt(delta) : -sqrt(delta))) / (2 * A);
     return (C <= 0) || (B <= 0);
 }
-//----------------------------------------
+
 float safeSqrt(float a) {
     return sqrt(max(a, 0.0));
 }
@@ -54,10 +54,6 @@ float clampDistance(float d) {
     return max(d, 0.0);
 }
 
-float clampRadius(float r) {
-    return clamp(r, ground_radius, top_atmosphere_radius);
-}
-
 // mapping form [0, 1] to [0.5 / n, 1 - 0.5 / n]
 float getTextureCoordFromUnitRange(float x, int texture_size) {
     return 0.5 / float(texture_size) + x * (1.0 - 1.0 / float(texture_size));
@@ -67,28 +63,26 @@ float getUnitRangeFromTextureCoord(float u, int texture_size) {
     return (u - 0.5 / float(texture_size)) / (1.0 - 1.0 / float(texture_size));
 }
 
-//余弦定理
-float distanceToTopAtmosphereBoundary(float r,float mu){
+float distanceToTopAtmosphereBoundary(float r, float mu){
     float discriminant = r * r * (mu * mu - 1.0) + top_atmosphere_radius * top_atmosphere_radius;
     return clampDistance(-r * mu + safeSqrt(discriminant));
 }
 
-
 // r, height from planet center
-vec2 getTransmittanceTextureUvFromRMu(float r, float mu,in ivec2 res){
+vec2 getTransmittanceTextureUvFromRMu(float r, float mu, in ivec2 res){
     float H =  sqrt(top_atmosphere_radius * top_atmosphere_radius - ground_radius * ground_radius);
     float rho = safeSqrt(r * r - ground_radius * ground_radius);
-    float d = distanceToTopAtmosphereBoundary(r,mu);
+    float d = distanceToTopAtmosphereBoundary(r, mu);
     float d_min = (top_atmosphere_radius - r);
     float d_max = rho + H;
     float x_mu = (d - d_min) / (d_max - d_min);
     float x_r = rho / H;
-    return vec2(getTextureCoordFromUnitRange(x_mu,res.x),getTextureCoordFromUnitRange(x_r,res.y));
+    return vec2(getTextureCoordFromUnitRange(x_mu, res.x), getTextureCoordFromUnitRange(x_r, res.y));
 }
 
-vec2 getRMuFromTransmittanceTextureUv(vec2 uv,in ivec2 res){
-    float x_mu = getUnitRangeFromTextureCoord(uv.x,res.x);
-    float x_r = getUnitRangeFromTextureCoord(uv.y,res.y);
+vec2 getRMuFromTransmittanceTextureUv(vec2 uv, in ivec2 res){
+    float x_mu = getUnitRangeFromTextureCoord(uv.x, res.x);
+    float x_r = getUnitRangeFromTextureCoord(uv.y, res.y);
 
     float H = sqrt(top_atmosphere_radius * top_atmosphere_radius - ground_radius * ground_radius);
     float rho = H * x_r;
@@ -98,45 +92,43 @@ vec2 getRMuFromTransmittanceTextureUv(vec2 uv,in ivec2 res){
     float d = d_min + x_mu * (d_max - d_min);
     float mu = d == 0.0 ? 1.0 : (H * H - rho * rho - d * d) / (2.0 * r * d);
     mu = clampCosine(mu);
-    return vec2(mu,r);
+    return vec2(mu, r);
 }
 
 void main(){
     ivec2 res = imageSize(Transmittance);
     ivec2 g_index = ivec2(gl_WorkGroupSize.xy * gl_WorkGroupID.xy + gl_LocalInvocationID.xy);
-    if(g_index.x >= res.x || g_index.y >= res.y){
+    if (g_index.x >= res.x || g_index.y >= res.y){
         return;
     }
 
-    //todo change mapping
+
     //get altitude and sun / zenith angle
-//    float theta = asin(mix(-1.0,1.0,(g_index.y + 0.5) / res.y));
-//    float h = mix(0.0, top_atmosphere_radius - ground_radius, (g_index.x + 0.5) / res.x);
-    vec2 ret = getRMuFromTransmittanceTextureUv(vec2(g_index + 0.5) / vec2(res),res);
+    vec2 ret = getRMuFromTransmittanceTextureUv(vec2(g_index + 0.5) / vec2(res), res);
     float r = ret.y;
     float cos_theta = ret.x;
     float sin_theta = safeSqrt(1 - cos_theta * cos_theta);
-//    imageStore(Transmittance,g_index,vec4(r - ground_radius,cos_theta,0.0,1.0));
-//    return;
+
     //isotropic for phi so just use 2d-coord instead of 3d-coord and use circle instead of sphere
-    vec2 c = vec2(0.0,r);
-    vec2 v = vec2(sin_theta,cos_theta);
+    vec2 c = vec2(0.0, r);
+    vec2 v = vec2(sin_theta, cos_theta);
 
     float t = 0;
-//    if(!findClosestIntersectionWithCircle(c,v,ground_radius,t)){
-        // will not intersect with ground, ok.
-        findClosestIntersectionWithCircle(c,v,top_atmosphere_radius,t);
-//    }
+
+    // will not intersect with ground, ok.
+    findClosestIntersectionWithCircle(c, v, top_atmosphere_radius, t);
+
     vec2 p = c + v * t;
 
     vec3 sum = vec3(0);
     float dt = t / STEP_COUNT;
-    for(int i = 0; i < STEP_COUNT; i++){
-        vec2 pi = mix(c,p,(i + 0.5) / STEP_COUNT);
+    for (int i = 0; i < STEP_COUNT; i++){
+        vec2 pi = mix(c, p, (i + 0.5) / STEP_COUNT);
         float hi = length(pi) - ground_radius;
         vec3 sigma_t = getSigmaT(hi);
         sum += sigma_t * dt;
     }
-    vec4 tranimittance = vec4(exp(-sum),1.f);
-    imageStore(Transmittance,g_index,tranimittance);
+
+    vec4 tranimittance = vec4(exp(-sum), 1.f);
+    imageStore(Transmittance, g_index, tranimittance);
 }
