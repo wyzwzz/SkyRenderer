@@ -4,6 +4,7 @@ and [Real-time rendering of volumetric clouds](https://www.diva-portal.org/smash
 
 
 ## ScreeShot
+![](screenshot/sky6.png)
 ![](screenshot/sky1.png)
 ![](screenshot/sky2.png)
 ![](screenshot/sky3.png)
