@@ -78,7 +78,7 @@ public:
             dir_samples_buffer.destroy();
             dir_samples_buffer.initialize_handle();
             auto dir_samples_arr = getPoissonDiskSamples(dir_samples);
-            dir_samples_buffer.initialize_buffer_data(dir_samples_arr.data(), dir_samples_arr.size() * sizeof(vec2f),
+            dir_samples_buffer.initialize_buffer_data(dir_samples_arr.data(), dir_samples_arr.size(),
                                                       GL_DYNAMIC_STORAGE_BIT);
         }
     }
