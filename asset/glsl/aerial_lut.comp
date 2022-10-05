@@ -148,7 +148,7 @@ void main() {
 
     float x = (g_index.x + 0.5) / res.x;
     float y = (g_index.y + 0.5) / res.y;
-    vec3 view_dir = mix(mix(frustum_a, frustum_b, x), mix(frustum_c, frustum_d, x), y);
+    vec3 view_dir = normalize(mix(mix(frustum_a, frustum_b, x), mix(frustum_c, frustum_d, x), y));
     vec3 planet_view_pos = vec3(0, view_height + ground_radius, 0);
     float u = dot(sun_dir, -view_dir);
 
